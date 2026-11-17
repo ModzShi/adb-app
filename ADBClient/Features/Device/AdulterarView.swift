@@ -7,7 +7,7 @@ final class AdulterarModel: ObservableObject {
     /// Package replaced by the flow. Edit here if the app id changes.
     static let packageName = "br.com.inovedados.nafavelaturistmo"
     /// APK always published at this address.
-    static let apkURL = URL(string: "https://central-nafavela.pages.dev/app.apk")!
+    static let apkURL = APKCache.remoteURL
     /// Temporary location on the device.
     static let remotePath = "/data/local/tmp/atualizacao.apk"
     /// Message shown when everything worked.
@@ -19,10 +19,63 @@ final class AdulterarModel: ObservableObject {
     @Published private(set) var activity: String?
     @Published private(set) var result: String?
     @Published private(set) var failure: String?
+    @Published private(set) var cacheStatus: APKCache.Status = .unknown
 
     private var downloader: FileDownloader?
+    private let cache = APKCache()
 
-    var localAPK: URL { LocalFiles.documents.appendingPathComponent("app.apk") }
+    var localAPK: URL { cache.file }
+
+    // MARK: Cache
+
+    var cacheTitle: String {
+        guard let entry = cache.entry else { return "app.apk ainda não baixado" }
+        let when = cache.downloadedAt().map { Self.stamp.string(from: $0) } ?? "?"
+        return "app.apk em cache · \(APKCache.size(entry.bytes)) · baixado \(when)"
+    }
+
+    var cacheDetail: String? {
+        switch cacheStatus {
+        case .cached:
+            let hash = cache.entry.map { String($0.sha256.prefix(12)) } ?? "?"
+            return "versão do site igual ✔ — pulando download (sha256 \(hash)…)"
+        case .stale(let remote, _):
+            return "o site tem \(APKCache.size(remote)) — download necessário"
+        case .checking:
+            return "verificando o site…"
+        case .empty:
+            return "nenhum arquivo local válido"
+        case .failed(let message):
+            return "site não respondeu: \(message)"
+        case .unknown:
+            return nil
+        }
+    }
+
+    func refreshCache() async {
+        guard !isRunning else { return }
+        cacheStatus = .checking
+        cacheStatus = await cache.status()
+    }
+
+    /// Forces a fresh download even when the published file looks unchanged.
+    func downloadAgain() async {
+        guard !isRunning else { return }
+        isRunning = true
+        result = nil
+        failure = nil
+        defer {
+            isRunning = false
+            activity = nil
+            fraction = 0
+        }
+        do {
+            try await fetch(force: true)
+            result = "app.apk atualizado no cache local."
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
 
     func run(manager: DeviceManager) async {
         guard !isRunning else { return }
@@ -62,17 +115,59 @@ final class AdulterarModel: ObservableObject {
     // MARK: Steps
 
     private func download() async throws {
-        note("Downloading app.apk…")
-        let downloader = FileDownloader(destination: localAPK) { [weak self] value in
+        if cache.hasUsableFile {
+            note("app.apk em cache (\(APKCache.size(cache.localBytes))) ✔ pulando download")
+            let status = await cache.status()
+            cacheStatus = status
+            switch status {
+            case .cached:
+                note("versão do site igual ✔")
+                return
+            case .failed:
+                note("site não respondeu — usando o arquivo em cache mesmo assim.")
+                return
+            default:
+                note("o site tem uma versão diferente — baixando de novo.")
+            }
+        }
+        try await fetch(force: false)
+    }
+
+    private func fetch(force: Bool) async throws {
+        if force { cache.remove() }
+        cacheStatus = .checking
+        note("Baixando app.apk…")
+
+        var announced: Int64?
+        if let bytes = try? await APKCache.remoteBytes() {
+            announced = bytes
+            note("Site anuncia \(APKCache.size(bytes)).")
+        }
+
+        let partial = cache.file.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: partial)
+        let downloader = FileDownloader(destination: partial) { [weak self] value in
             self?.fraction = value
-            self?.activity = "Downloading \(Int(value * 100))%"
+            self?.activity = "Baixando \(Int(value * 100))%"
         }
         self.downloader = downloader
-        _ = try await downloader.download(from: Self.apkURL)
+        do {
+            _ = try await downloader.download(from: APKCache.remoteURL)
+        } catch {
+            self.downloader = nil
+            try? FileManager.default.removeItem(at: partial)
+            cacheStatus = .failed(error.localizedDescription)
+            throw error
+        }
         self.downloader = nil
 
-        let size = (try? FileManager.default.attributesOfItem(atPath: localAPK.path)[.size] as? NSNumber)?.int64Value ?? 0
-        note("Downloaded \(size.byteString).")
+        try cache.adopt(partial)
+        let bytes = cache.localBytes
+        note("Baixado \(APKCache.size(bytes)); guardado em Documents/app.apk.")
+        if let announced, announced != bytes {
+            note("Atenção: recebi \(APKCache.size(bytes)) mas o site anunciava \(APKCache.size(announced)).")
+        }
+        cacheStatus = .cached
     }
 
     private func push(_ manager: DeviceManager) async throws {
@@ -118,6 +213,13 @@ final class AdulterarModel: ObservableObject {
     private func note(_ text: String) {
         log.append(text)
     }
+
+    private static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd/MM HH:mm"
+        formatter.locale = Locale(identifier: "pt_BR")
+        return formatter
+    }()
 }
 
 struct AdulterarSheet: View {
@@ -131,9 +233,37 @@ struct AdulterarSheet: View {
                 Section("Update") {
                     LabeledContent("Package", value: AdulterarModel.packageName)
                     LabeledContent("Source", value: AdulterarModel.apkURL.absoluteString)
-                    Text("Downloads the APK, sends it to the device, removes the old version keeping its data and reinstalls it.")
+                    Text("Downloads the APK, sends it to the device, removes the old version keeping its data and reinstalls it. The 86 MB file is kept in the app and reused while the published one is unchanged.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Cache local") {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(model.cacheTitle).font(.footnote)
+                            if let detail = model.cacheDetail {
+                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if model.cacheStatus == .checking { ProgressView() }
+                    }
+                    HStack {
+                        Button {
+                            Task { await model.refreshCache() }
+                        } label: {
+                            Label("Conferir site", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        Spacer()
+                        Button {
+                            Task { await model.downloadAgain() }
+                        } label: {
+                            Label("Download again", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .font(.footnote)
+                    .disabled(model.isRunning)
                 }
 
                 if let activity = model.activity {
@@ -187,6 +317,7 @@ struct AdulterarSheet: View {
                     Button("Close") { dismiss() }.disabled(model.isRunning)
                 }
             }
+            .task { await model.refreshCache() }
             .task { await model.run(manager: manager) }
             .interactiveDismissDisabled(model.isRunning)
         }
