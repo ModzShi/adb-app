@@ -14,6 +14,7 @@ struct DeviceView: View {
     @State private var notice: String?
     @State private var confirmReboot: String?
     @State private var showAdulterar = false
+    @State private var showQR = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +38,13 @@ struct DeviceView: View {
             .infoAlert("Connection lost", message: $manager.connectionLostMessage)
             .sheet(isPresented: $showAdulterar) {
                 AdulterarSheet().environmentObject(manager)
+            }
+            .sheet(isPresented: $showQR) {
+                QRPairSheet(browser: browser) { newHost, newPort in
+                    host = newHost
+                    port = newPort.map(String.init) ?? ""
+                }
+                .environmentObject(manager)
             }
             .confirmationDialog("Reboot the device?",
                                 isPresented: Binding(get: { confirmReboot != nil }, set: { if !$0 { confirmReboot = nil } }),
@@ -158,6 +166,11 @@ struct DeviceView: View {
 
     private var pairSection: some View {
         Section {
+            Button {
+                showQR = true
+            } label: {
+                Label("Scan QR code", systemImage: "qrcode.viewfinder")
+            }
             TextField("IP address", text: $pairHost)
                 .keyboardType(.numbersAndPunctuation)
                 .textInputAutocapitalization(.never)

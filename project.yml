@@ -39,6 +39,7 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: "ADB Client connects to Android devices on your local network for debugging."
+        NSCameraUsageDescription: "ADB Client uses the camera to read the wireless debugging pairing QR code."
         NSBonjourServices:
           - _adb-tls-pairing._tcp
           - _adb-tls-connect._tcp
