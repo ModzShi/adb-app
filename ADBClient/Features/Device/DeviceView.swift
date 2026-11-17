@@ -13,12 +13,14 @@ struct DeviceView: View {
     @State private var error: String?
     @State private var notice: String?
     @State private var confirmReboot: String?
+    @State private var showAdulterar = false
 
     var body: some View {
         NavigationStack {
             Form {
                 statusSection
                 if manager.connection != nil {
+                    adulterarSection
                     deviceSection
                 } else {
                     connectSection
@@ -33,6 +35,9 @@ struct DeviceView: View {
             .errorAlert($error)
             .infoAlert("ADB", message: $notice)
             .infoAlert("Connection lost", message: $manager.connectionLostMessage)
+            .sheet(isPresented: $showAdulterar) {
+                AdulterarSheet().environmentObject(manager)
+            }
             .confirmationDialog("Reboot the device?",
                                 isPresented: Binding(get: { confirmReboot != nil }, set: { if !$0 { confirmReboot = nil } }),
                                 titleVisibility: .visible) {
@@ -60,6 +65,33 @@ struct DeviceView: View {
                 if manager.status == .connecting || manager.status == .waitingAuthorization { ProgressView() }
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    /// One-tap "replace the app on the device with the published APK" button.
+    private var adulterarSection: some View {
+        Section {
+            Button {
+                showAdulterar = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.down.app.fill")
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("ADULTERAR")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text("Download the new APK and reinstall it keeping the login")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
         }
     }
 
