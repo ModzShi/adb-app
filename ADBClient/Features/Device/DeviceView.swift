@@ -1,6 +1,11 @@
 import SwiftUI
 
 struct DeviceView: View {
+    private enum DeviceSheet: String, Identifiable {
+        case adulterar, scanQR, showQR
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var manager: DeviceManager
     @StateObject private var browser = MDNSBrowser()
 
@@ -13,8 +18,7 @@ struct DeviceView: View {
     @State private var error: String?
     @State private var notice: String?
     @State private var confirmReboot: String?
-    @State private var showAdulterar = false
-    @State private var showQR = false
+    @State private var sheet: DeviceSheet?
 
     var body: some View {
         NavigationStack {
@@ -36,15 +40,15 @@ struct DeviceView: View {
             .errorAlert($error)
             .infoAlert("ADB", message: $notice)
             .infoAlert("Connection lost", message: $manager.connectionLostMessage)
-            .sheet(isPresented: $showAdulterar) {
-                AdulterarSheet().environmentObject(manager)
-            }
-            .sheet(isPresented: $showQR) {
-                QRPairSheet(browser: browser) { newHost, newPort in
-                    host = newHost
-                    port = newPort.map(String.init) ?? ""
+            .sheet(item: $sheet) { which in
+                switch which {
+                case .adulterar:
+                    AdulterarSheet().environmentObject(manager)
+                case .scanQR:
+                    QRPairSheet(browser: browser, onPaired: prefill).environmentObject(manager)
+                case .showQR:
+                    ShowQRSheet(browser: browser, onPaired: prefill).environmentObject(manager)
                 }
-                .environmentObject(manager)
             }
             .confirmationDialog("Reboot the device?",
                                 isPresented: Binding(get: { confirmReboot != nil }, set: { if !$0 { confirmReboot = nil } }),
@@ -80,7 +84,7 @@ struct DeviceView: View {
     private var adulterarSection: some View {
         Section {
             Button {
-                showAdulterar = true
+                sheet = .adulterar
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "arrow.down.app.fill")
@@ -167,9 +171,14 @@ struct DeviceView: View {
     private var pairSection: some View {
         Section {
             Button {
-                showQR = true
+                sheet = .showQR
             } label: {
-                Label("Scan QR code", systemImage: "qrcode.viewfinder")
+                Label("Show QR code (phone scans)", systemImage: "qrcode")
+            }
+            Button {
+                sheet = .scanQR
+            } label: {
+                Label("Scan a QR code", systemImage: "qrcode.viewfinder")
             }
             TextField("IP address", text: $pairHost)
                 .keyboardType(.numbersAndPunctuation)
@@ -192,7 +201,7 @@ struct DeviceView: View {
         } header: {
             Text("Pair with code")
         } footer: {
-            Text("On the phone: Developer options > Wireless debugging > Pair device with pairing code. Keep that screen open while pairing.")
+            Text("On the phone: Developer options > Wireless debugging. \"Pair device with QR code\" makes the phone scan a QR — use \"Show QR code\". \"Pair device with pairing code\" shows an IP, a port and a 6-digit code — type them here. Keep that screen open while pairing.")
         }
     }
 
@@ -281,6 +290,12 @@ struct DeviceView: View {
     }
 
     // MARK: Actions
+
+    /// Fills the manual fields with whatever the QR flow discovered.
+    private func prefill(host newHost: String, port newPort: Int?) {
+        host = newHost
+        port = newPort.map(String.init) ?? ""
+    }
 
     private func select(_ service: MDNSBrowser.Service) {
         switch service.kind {

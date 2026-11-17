@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// Reads Android's wireless-debugging QR code, finds the pairing service over mDNS,
-/// pairs with the code found in the QR payload and connects to the device.
+/// Scans a QR code with the camera and pairs with the credentials it carries.
+///
+/// Useful when the QR is produced by another host (for example Android Studio);
+/// for the phone's own "Pair device with QR code" screen use `ShowQRSheet` —
+/// that screen is a *scanner*, so it needs a QR to look at.
 struct QRPairSheet: View {
     @EnvironmentObject private var manager: DeviceManager
     @Environment(\.dismiss) private var dismiss
@@ -9,62 +12,61 @@ struct QRPairSheet: View {
     /// Called with the device address so the caller can prefill the manual fields.
     var onPaired: (String, Int?) -> Void
 
-    @State private var payload: ADBQRPayload?
+    @StateObject private var session = PairingSession()
+    @State private var scanned: ADBQRPayload?
     @State private var manual = ""
     @State private var scannerID = UUID()
-    @State private var status: String?
+    @State private var runToken = UUID()
     @State private var error: String?
-    @State private var isWorking = false
-    @State private var finished = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if !finished {
+                if scanned == nil {
                     QRScannerView { text in handle(text) }
                         .id(scannerID)
-                        .frame(height: 300)
+                        .frame(height: 280)
                         .clipped()
                 }
 
                 Form {
-                    if let payload {
+                    if let scanned {
                         Section("QR code") {
-                            LabeledContent("Service", value: payload.serviceName)
-                            LabeledContent("Code", value: payload.password)
+                            LabeledContent("Service", value: scanned.serviceName)
+                            LabeledContent("Code", value: scanned.password)
                         }
                     }
 
-                    if let status {
-                        Section {
-                            HStack(spacing: 10) {
-                                if isWorking { ProgressView() }
-                                Text(status).font(.footnote).foregroundStyle(.secondary)
+                    Section {
+                        HStack(spacing: 10) {
+                            if session.isRunning { ProgressView() }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(statusTitle).font(.subheadline)
+                                if !session.message.isEmpty {
+                                    Text(session.message).font(.footnote).foregroundStyle(.secondary)
+                                }
                             }
                         }
-                    }
-
-                    if finished {
-                        Section {
-                            Label("Connected.", systemImage: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                        }
+                    } header: {
+                        Text("Status")
                     }
 
                     Section {
                         Button {
                             error = nil
-                            payload = nil
+                            scanned = nil
+                            manual = ""
+                            session.cancel()
                             scannerID = UUID()
                         } label: {
                             Label("Scan again", systemImage: "qrcode.viewfinder")
                         }
-                        .disabled(isWorking || finished)
+                        .disabled(session.isRunning)
                     } footer: {
-                        Text("On the phone: Developer options > Wireless debugging > Pair device with QR code. Keep that screen open while scanning.")
+                        Text("Point the camera at a `WIFI:T:ADB;S:…;P:…;;` QR code. If the phone shows no QR, close this and use \"Show QR code\".")
                     }
 
-                    if payload == nil && !finished {
+                    if scanned == nil {
                         Section("Or paste the QR content") {
                             TextField("WIFI:T:ADB;S:…;P:…;;", text: $manual)
                                 .textInputAutocapitalization(.never)
@@ -74,105 +76,57 @@ struct QRPairSheet: View {
                             } label: {
                                 Label("Use pasted data", systemImage: "doc.on.clipboard")
                             }
-                            .disabled(isWorking || manual.trimmed.isEmpty)
+                            .disabled(session.isRunning || manual.trimmed.isEmpty)
                         }
                     }
                 }
             }
-            .navigationTitle("Pair with QR code")
+            .navigationTitle("Scan QR code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }.disabled(isWorking)
+                    Button("Close") { dismiss() }.disabled(session.isRunning)
                 }
             }
             .errorAlert($error)
-            .interactiveDismissDisabled(isWorking)
+            .task(id: runToken) {
+                guard let scanned else { return }
+                await session.run(serviceName: scanned.serviceName, password: scanned.password,
+                                  browser: browser, manager: manager)
+                guard case .connected = session.phase, let endpoint = session.connectedEndpoint else { return }
+                onPaired(endpoint.host, endpoint.port)
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                dismiss()
+            }
+            .interactiveDismissDisabled(session.isRunning)
         }
     }
 
-    // MARK: Flow
+    private var statusTitle: String {
+        switch session.phase {
+        case .idle: return String(localized: "Ready")
+        case .searching: return String(localized: "Looking for the device…")
+        case .pairing: return String(localized: "Pairing…")
+        case .waitingForConnection: return String(localized: "Connecting…")
+        case .connected: return String(localized: "Connected ✅")
+        case .pairedOnly: return String(localized: "Paired (not connected)")
+        case .timedOut: return String(localized: "Timed out")
+        case .failed: return String(localized: "Error")
+        }
+    }
 
     @MainActor
     private func handle(_ text: String) {
-        let text = text.trimmed
-        guard !text.isEmpty else { return }
-        guard let payload = ADBQRPayload(string: text) else {
+        let value = text.trimmed
+        guard !value.isEmpty else { return }
+        guard let payload = ADBQRPayload(string: value) else {
             error = "This QR code is not an Android wireless-debugging pairing code."
-            if self.payload == nil { scannerID = UUID() }
+            if scanned == nil { scannerID = UUID() }
             return
         }
-        self.payload = payload
-        manual = ""
-        Task { await pair(using: payload) }
-    }
-
-    @MainActor
-    private func pair(using payload: ADBQRPayload) async {
-        guard !isWorking else { return }
-        isWorking = true
         error = nil
-        defer { isWorking = false }
-
-        // Start from a clean discovery list so a stale port is never reused.
-        browser.restart()
-        status = "Looking for \(payload.serviceName) on the network…"
-
-        guard let pairing = await waitFor(kind: .pairing, name: payload.serviceName, timeout: 20) else {
-            status = nil
-            error = "Service \(payload.serviceName) not found. Keep the QR screen open and stay on the same Wi-Fi network."
-            return
-        }
-
-        status = "Pairing with \(pairing.host):\(pairing.port)…"
-        let guid: String
-        do {
-            guid = try await manager.pair(host: pairing.host, port: pairing.port, code: payload.password)
-        } catch {
-            status = nil
-            self.error = error.localizedDescription
-            return
-        }
-        onPaired(pairing.host, nil)
-        status = "Paired\(guid.isEmpty ? "" : " (\(guid))"). Waiting for the connection port…"
-
-        // The device advertises the connect service as soon as the QR screen closes.
-        browser.restart()
-        guard let connect = await waitFor(kind: .connect, host: pairing.host, timeout: 25) else {
-            status = "Paired. Open the Wireless debugging screen and tap Connect, then use the port shown there."
-            return
-        }
-
-        do {
-            try await manager.connect(host: connect.host, port: connect.port)
-            onPaired(connect.host, connect.port)
-            status = "Connected to \(manager.info.displayName) at \(connect.host):\(connect.port)."
-            finished = true
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            dismiss()
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    /// Polls the discovery list because NetService resolution has no completion we can await.
-    @MainActor
-    private func waitFor(kind: MDNSBrowser.Kind, name: String? = nil, host: String? = nil,
-                         timeout: TimeInterval) async -> MDNSBrowser.Service? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let match = browser.services.first(where: { service in
-                guard service.kind == kind else { return false }
-                if let host, service.host != host { return false }
-                if let name, !name.isEmpty {
-                    return service.name.compare(name, options: .caseInsensitive) == .orderedSame
-                }
-                return true
-            }) {
-                return match
-            }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-        }
-        return nil
+        scanned = payload
+        manual = ""
+        runToken = UUID()
     }
 }
