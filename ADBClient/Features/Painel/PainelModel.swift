@@ -75,7 +75,7 @@ final class PainelModel: ObservableObject {
         guard let estado else { return "" }
         if estado.armado == true { return "tudo já está com o seu pix" }
         if estado.auto == true {
-            return "só em UMA cobrança única acima de \(brl(estado.limiar))"
+            return "só em UMA cobrança única acima de \(Self.brl(estado.limiar))"
         }
         return "nada sendo desviado agora"
     }
