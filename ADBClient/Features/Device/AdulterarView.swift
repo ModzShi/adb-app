@@ -93,10 +93,10 @@ final class AdulterarModel: ObservableObject {
 
     private func install(_ manager: DeviceManager) async throws {
         note("Installing update…")
-        var output = try await shell(manager, "pm install -r \(Self.remotePath)")
+        var output = try await shell(manager, "pm install -r -d \(Self.remotePath)")
         if !output.lowercased().contains("success") {
             note("`pm install -r` failed — retrying without -r.")
-            output = try await shell(manager, "pm install \(Self.remotePath)")
+            output = try await shell(manager, "pm install -d \(Self.remotePath)")
         }
         guard output.lowercased().contains("success") else {
             throw AdbError.commandFailed(output.isEmpty ? "pm install returned no output." : output)
