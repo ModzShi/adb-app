@@ -23,6 +23,8 @@ struct ADBClientApp: App {
 struct ContentView: View {
     var body: some View {
         TabView {
+            PainelView()
+                .tabItem { Label("Painel", systemImage: "chart.bar.fill") }
             DeviceView()
                 .tabItem { Label("Device", systemImage: "antenna.radiowaves.left.and.right") }
             AppsView()
