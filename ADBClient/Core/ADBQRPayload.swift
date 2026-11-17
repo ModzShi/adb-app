@@ -47,9 +47,9 @@ struct ADBQRPayload: Equatable {
 
         if let type = fields["T"]?.trimmed, !type.isEmpty, type.uppercased() != "ADB" { return nil }
         guard let name = fields["S"]?.trimmed, !name.isEmpty,
-              let password = fields["P"]?.trimmed, !password.isEmpty else { return nil }
+              let code = fields["P"]?.trimmed, !code.isEmpty else { return nil }
 
         serviceName = name
-        password = password
+        password = code
     }
 }

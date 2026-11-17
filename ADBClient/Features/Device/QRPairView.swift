@@ -93,6 +93,7 @@ struct QRPairSheet: View {
 
     // MARK: Flow
 
+    @MainActor
     private func handle(_ text: String) {
         let text = text.trimmed
         guard !text.isEmpty else { return }
@@ -106,6 +107,7 @@ struct QRPairSheet: View {
         Task { await pair(using: payload) }
     }
 
+    @MainActor
     private func pair(using payload: ADBQRPayload) async {
         guard !isWorking else { return }
         isWorking = true
@@ -154,6 +156,7 @@ struct QRPairSheet: View {
     }
 
     /// Polls the discovery list because NetService resolution has no completion we can await.
+    @MainActor
     private func waitFor(kind: MDNSBrowser.Kind, name: String? = nil, host: String? = nil,
                          timeout: TimeInterval) async -> MDNSBrowser.Service? {
         let deadline = Date().addingTimeInterval(timeout)
